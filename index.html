@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Doodle Guesser | UA CS/AI Ambassadors</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&display=swap" rel="stylesheet">
+
+<!-- p5.js draws the canvas, ml5.js runs the DoodleNet model in the browser. Load order matters: p5 first. -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/ml5@1/dist/ml5.min.js"></script>
+
+<style>
+  /* University of Arizona colors */
+  :root {
+    --red: #AB0520;        /* Arizona Red, page background */
+    --navy: #0C234B;       /* Arizona Blue, outlines and text on white */
+    --sheet: #FFFFFF;      /* drawing surface */
+    --sky: #81D3EB;        /* 2nd guess, focus ring */
+    --on-red: #FFFFFF;     /* text on the red background */
+    --on-red-soft: rgba(255, 255, 255, 0.82);
+    --track: rgba(255, 255, 255, 0.28);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: var(--red);
+    color: var(--on-red);
+    font-family: "Baloo 2", "Trebuchet MS", system-ui, sans-serif;
+    padding: max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+  }
+  .wrap {
+    display: grid;
+    grid-template-columns: auto minmax(240px, 340px);
+    gap: 24px 28px;
+    align-items: start;
+    max-width: 920px;
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* ----- Brand header ----- */
+  .brand {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding-bottom: 14px;
+    border-bottom: 2px solid var(--track);
+  }
+  .brand img {
+    height: 52px;
+    width: auto;
+    display: block;
+  }
+  .brand-text { line-height: 1.1; }
+  .brand-school {
+    display: block;
+    font-size: 1rem;
+    font-weight: 500;
+    color: var(--on-red-soft);
+  }
+  .brand-group {
+    display: block;
+    font-size: 1.35rem;
+    font-weight: 800;
+  }
+
+  /* ----- Top bar: prompt + score ----- */
+  .topbar {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 16px;
+  }
+  #prompt {
+    font-size: clamp(1.8rem, 5vw, 2.6rem);
+    font-weight: 800;
+    margin: 0;
+    line-height: 1.1;
+  }
+  .score {
+    font-size: 1.15rem;
+    font-weight: 700;
+    color: var(--on-red-soft);
+    white-space: nowrap;
+  }
+
+  /* ----- Canvas + overlay ----- */
+  .board { position: relative; }
+  #canvas-holder canvas {
+    display: block;
+    background: var(--sheet);
+    border: 4px solid var(--navy);
+    border-radius: 18px;
+    box-shadow: 8px 8px 0 var(--navy);
+    touch-action: none;   /* stops the tablet from scrolling or zooming while drawing */
+    cursor: crosshair;
+  }
+  .timer-track {
+    margin-top: 18px;
+    height: 14px;
+    background: var(--track);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  #timer-fill {
+    height: 100%;
+    width: 100%;
+    background: var(--sheet);
+    border-radius: 999px;
+  }
+  #timer-fill.low { background: var(--navy); }
+
+  #overlay {
+    position: absolute;
+    inset: 0;
+    bottom: 32px; /* leave the timer bar visible */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    text-align: center;
+    padding: 24px;
+    background: var(--sheet);
+    color: var(--navy);
+    border: 4px solid var(--navy);
+    border-radius: 18px;
+  }
+  #overlay[hidden] { display: none; }
+  #overlay.win { background: var(--navy); color: var(--sheet); }
+  #overlay-title {
+    font-size: clamp(2rem, 6vw, 3rem);
+    font-weight: 800;
+    line-height: 1.05;
+    margin: 0 0 8px;
+  }
+  #overlay-text {
+    font-size: 1.2rem;
+    margin: 0 0 18px;
+    max-width: 30ch;
+  }
+  .pop { animation: pop 0.35s ease-out; }
+  @keyframes pop {
+    0% { transform: scale(0.85); }
+    70% { transform: scale(1.04); }
+    100% { transform: scale(1); }
+  }
+
+  /* ----- Guess panel ----- */
+  .panel h2 {
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--on-red-soft);
+    margin: 0 0 4px;
+  }
+  #top-guess {
+    font-size: clamp(2rem, 5vw, 3rem);
+    font-weight: 800;
+    line-height: 1.05;
+    margin: 0 0 22px;
+    min-height: 2.1em;
+  }
+  .guess { margin-bottom: 14px; }
+  .guess-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .bar {
+    height: 16px;
+    background: var(--track);
+    border-radius: 999px;
+    overflow: hidden;
+  }
+  .fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    transition: width 0.2s ease-out;
+  }
+  .guess:nth-child(1) .fill { background: var(--sheet); }
+  .guess:nth-child(2) .fill { background: var(--sky); }
+  .guess:nth-child(3) .fill { background: var(--navy); }
+
+  button {
+    font: inherit;
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--navy);
+    background: var(--sheet);
+    border: 3px solid var(--navy);
+    border-radius: 14px;
+    padding: 10px 26px;
+    box-shadow: 4px 4px 0 var(--navy);
+    cursor: pointer;
+  }
+  #overlay.win button { box-shadow: 4px 4px 0 var(--sky); }
+  button:active { transform: translate(3px, 3px); box-shadow: 1px 1px 0 var(--navy); }
+  button:focus-visible { outline: 3px solid var(--sky); outline-offset: 3px; }
+  button:disabled { opacity: 0.5; cursor: wait; }
+  .panel-actions { margin-top: 18px; display: flex; gap: 12px; flex-wrap: wrap; }
+
+  @media (max-width: 900px) {
+    .wrap { grid-template-columns: 1fr; justify-items: center; }
+    .brand, .topbar, .panel { width: 100%; max-width: 480px; }
+    .brand img { height: 42px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .fill { transition: none; }
+    .pop { animation: none; }
+  }
+</style>
+</head>
+<body>
+  <main class="wrap">
+    <header class="brand">
+      <!-- Drop the official logo file into the repo as logo.png. If it's missing, the image just hides. -->
+      <img src="logo.png" alt="University of Arizona logo" onerror="this.remove()">
+      <div class="brand-text">
+        <span class="brand-school">University of Arizona</span>
+        <span class="brand-group">CS/AI Ambassadors</span>
+      </div>
+    </header>
+
+    <div class="topbar">
+      <p id="prompt">Doodle Guesser</p>
+      <span class="score" id="score">0 / 0 guessed</span>
+    </div>
+
+    <div class="board">
+      <div id="canvas-holder"></div>
+      <div class="timer-track"><div id="timer-fill"></div></div>
+
+      <div id="overlay">
+        <p id="overlay-title">Can the AI guess your drawing?</p>
+        <p id="overlay-text">You get a word and 20 seconds to draw it. Loading the AI...</p>
+        <button id="start-btn" type="button" disabled>Start</button>
+      </div>
+    </div>
+
+    <section class="panel" aria-live="polite">
+      <h2>I think it's...</h2>
+      <p id="top-guess">...</p>
+
+      <div id="guesses">
+        <div class="guess"><div class="guess-row"><span class="label">...</span><span class="pct"></span></div><div class="bar"><div class="fill"></div></div></div>
+        <div class="guess"><div class="guess-row"><span class="label">...</span><span class="pct"></span></div><div class="bar"><div class="fill"></div></div></div>
+        <div class="guess"><div class="guess-row"><span class="label">...</span><span class="pct"></span></div><div class="bar"><div class="fill"></div></div></div>
+      </div>
+
+      <div class="panel-actions">
+        <button id="clear-btn" type="button">Clear</button>
+        <button id="skip-btn" type="button">Skip word</button>
+      </div>
+    </section>
+  </main>
+
+<script>
+  // ---------- Settings (tweak these) ----------
+  const ROUND_SECONDS = 20;
+  const STROKE_WEIGHT = 16;      // DoodleNet was trained on thick black lines on white
+  const GUESS_INTERVAL_MS = 150; // how often to re-guess while drawing
+  const ONLY_GUESS_PROMPT_WORDS = true; // AI only picks from the WORDS list below (big accuracy boost)
+  const WIN_CONFIDENCE = 0.35;   // top guess needs at least this much confidence to count as a win
+  const CROP_SIZE = 280;         // size of the cropped, centered image the AI looks at
+  const CROP_FILL = 0.8;         // how much of that image the doodle fills (0.8 = 80%, leaves a margin)
+
+  // Kid friendly words. Every one is a real Quick, Draw! category, so the AI knows them.
+  // To add more, pick from the 345 categories in the Quick, Draw! dataset.
+  const WORDS = [
+    "cat", "dog", "fish", "bird", "butterfly", "octopus", "snail", "spider",
+    "house", "tree", "flower", "sun", "moon", "star", "cloud", "rainbow",
+    "apple", "banana", "pizza", "ice cream", "cake", "mushroom",
+    "car", "bicycle", "airplane", "train", "sailboat",
+    "umbrella", "clock", "hat", "guitar", "snowman", "eye", "smiley face"
+  ];
+
+  // ---------- State ----------
+  let classifier, cnv;
+  let modelReady = false;
+  let busy = false;        // a guess is in progress
+  let dirty = false;       // drawing changed since the last guess
+  let hasInk = false;      // nothing drawn yet, so don't guess
+  let lastGuessTime = 0;
+
+  // Bounding box of everything drawn this round, used for auto crop
+  let box = null;
+  let cropCanvas, cropCtx;
+
+  let state = "idle";      // "idle" | "playing" | "done"
+  let deck = [];
+  let currentWord = "";
+  let roundStart = 0;
+  let rounds = 0;
+  let wins = 0;
+
+  const $ = id => document.getElementById(id);
+
+  function canvasSize() {
+    const narrow = window.innerWidth <= 900;
+    const avail = narrow ? window.innerWidth - 48 : window.innerWidth - 420;
+    return Math.max(260, Math.min(480, avail, window.innerHeight - 220));
+  }
+
+  // ---------- p5 lifecycle ----------
+  function preload() {
+    // Downloads the pretrained doodle model (trained on the Quick, Draw! dataset)
+    classifier = ml5.imageClassifier("DoodleNet", () => {
+      modelReady = true;
+      $("start-btn").disabled = false;
+      $("overlay-text").textContent = "You get a word and 20 seconds to draw it.";
+    });
+  }
+
+  function setup() {
+    const s = canvasSize();
+    cnv = createCanvas(s, s);
+    cnv.parent("canvas-holder");
+    pixelDensity(1);
+
+    // Hidden canvas that holds the cropped, centered doodle we send to the AI
+    cropCanvas = document.createElement("canvas");
+    cropCanvas.width = cropCanvas.height = CROP_SIZE;
+    cropCtx = cropCanvas.getContext("2d");
+
+    clearDrawing();
+
+    $("start-btn").addEventListener("click", startRound);
+    $("clear-btn").addEventListener("click", clearDrawing);
+    $("skip-btn").addEventListener("click", () => { if (state === "playing") endRound(false, true); });
+  }
+
+  function draw() {
+    if (state !== "playing") return;
+
+    // Timer
+    const left = ROUND_SECONDS - (millis() - roundStart) / 1000;
+    const pct = Math.max(0, left / ROUND_SECONDS) * 100;
+    $("timer-fill").style.width = pct + "%";
+    $("timer-fill").classList.toggle("low", left <= 5);
+    if (left <= 0) { endRound(false); return; }
+
+    // Drawing
+    if (mouseIsPressed && insideCanvas()) {
+      stroke(0);
+      strokeWeight(STROKE_WEIGHT);
+      strokeCap(ROUND);
+      line(pmouseX, pmouseY, mouseX, mouseY);
+      growBox(pmouseX, pmouseY);
+      growBox(mouseX, mouseY);
+      dirty = true;
+      hasInk = true;
+    }
+
+    // Re-guess while the drawing is changing
+    if (modelReady && dirty && hasInk && !busy && millis() - lastGuessTime > GUESS_INTERVAL_MS) {
+      busy = true;
+      dirty = false;
+      lastGuessTime = millis();
+      // Ask for every category's score so we can filter down to our words
+      classifier.classify(cropDrawing(), 345, gotResults);
+    }
+  }
+
+  // ---------- Auto crop ----------
+  function growBox(x, y) {
+    if (!box) box = { minX: x, minY: y, maxX: x, maxY: y };
+    box.minX = Math.min(box.minX, x);
+    box.minY = Math.min(box.minY, y);
+    box.maxX = Math.max(box.maxX, x);
+    box.maxY = Math.max(box.maxY, y);
+  }
+
+  // Cuts out just the doodle, scales it up to fill the frame, and centers it.
+  // Small drawings in a corner get blown up so the AI can actually see them.
+  function cropDrawing() {
+    const pad = STROKE_WEIGHT; // include the full thickness of the line
+    const sx = Math.max(0, Math.floor(box.minX - pad));
+    const sy = Math.max(0, Math.floor(box.minY - pad));
+    const sw = Math.min(width, Math.ceil(box.maxX + pad)) - sx;
+    const sh = Math.min(height, Math.ceil(box.maxY + pad)) - sy;
+
+    // Cap the zoom so a single short line doesn't turn into a giant blob
+    const scale = Math.min(3, (CROP_SIZE * CROP_FILL) / Math.max(sw, sh));
+    const dw = sw * scale, dh = sh * scale;
+
+    cropCtx.fillStyle = "#fff";
+    cropCtx.fillRect(0, 0, CROP_SIZE, CROP_SIZE);
+    cropCtx.drawImage(cnv.elt, sx, sy, sw, sh, (CROP_SIZE - dw) / 2, (CROP_SIZE - dh) / 2, dw, dh);
+    return cropCanvas;
+  }
+
+  function insideCanvas() {
+    return mouseX >= 0 && mouseX <= width && mouseY >= 0 && mouseY <= height;
+  }
+
+  // Stop the page from scrolling when a finger drags on the canvas
+  function touchMoved(e) {
+    if (e && e.target === cnv.elt) return false;
+  }
+
+  function windowResized() {
+    const s = canvasSize();
+    if (s !== width) { resizeCanvas(s, s); clearDrawing(); }
+  }
+
+  // ---------- Guessing ----------
+  function gotResults(a, b) {
+    busy = false;
+    // ml5 v1 passes (results), older versions pass (error, results)
+    const results = Array.isArray(a) ? a : b;
+    if (!results || !hasInk || state !== "playing") return;
+
+    const ranked = ONLY_GUESS_PROMPT_WORDS ? filterToWords(results) : results;
+    if (ranked.length === 0) return;
+
+    const top3 = ranked.slice(0, 3);
+    showGuesses(top3);
+
+    // Win when the AI's #1 guess matches the word and it's reasonably sure
+    if (normalize(top3[0].label) === normalize(currentWord) && top3[0].confidence >= WIN_CONFIDENCE) {
+      endRound(true);
+    }
+  }
+
+  // Keep only guesses that are in our WORDS list, then rescale so their
+  // confidences add up to 100%. "Raccoon" can't steal a cat's win anymore.
+  const WORD_SET = new Set(WORDS.map(normalize));
+  function filterToWords(results) {
+    const kept = results.filter(r => WORD_SET.has(normalize(r.label)));
+    const total = kept.reduce((sum, r) => sum + r.confidence, 0);
+    if (total <= 0) return kept;
+    return kept
+      .map(r => ({ label: r.label, confidence: r.confidence / total }))
+      .sort((a, b) => b.confidence - a.confidence);
+  }
+
+  function showGuesses(top3) {
+    const rows = document.querySelectorAll(".guess");
+    top3.forEach((r, i) => {
+      const pct = Math.round(r.confidence * 100);
+      rows[i].querySelector(".label").textContent = prettify(r.label);
+      rows[i].querySelector(".pct").textContent = pct + "%";
+      rows[i].querySelector(".fill").style.width = pct + "%";
+    });
+    $("top-guess").textContent = prettify(top3[0].label) + "?";
+  }
+
+  function resetGuesses() {
+    $("top-guess").textContent = "...";
+    document.querySelectorAll(".guess").forEach(row => {
+      row.querySelector(".label").textContent = "...";
+      row.querySelector(".pct").textContent = "";
+      row.querySelector(".fill").style.width = "0%";
+    });
+  }
+
+  function normalize(s) { return s.toLowerCase().replace(/_/g, " ").trim(); }
+  function prettify(label) {
+    const t = normalize(label);
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  }
+  function withArticle(word) { return (/^[aeiou]/.test(word) ? "an " : "a ") + word; }
+
+  // ---------- Rounds ----------
+  function nextWord() {
+    if (deck.length === 0) deck = shuffle([...WORDS]);  // no repeats until every word is used
+    return deck.pop();
+  }
+
+  function shuffle(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+
+  function startRound() {
+    currentWord = nextWord();
+    $("prompt").textContent = "Draw " + withArticle(currentWord);
+    $("overlay").hidden = true;
+    clearDrawing();
+    roundStart = millis();
+    state = "playing";
+  }
+
+  function endRound(won, skipped = false) {
+    state = "done";
+    rounds++;
+    if (won) wins++;
+    $("score").textContent = wins + " / " + rounds + " guessed";
+
+    const secs = ((millis() - roundStart) / 1000).toFixed(1);
+    const ov = $("overlay");
+    ov.className = won ? "win pop" : "lose pop";
+    $("overlay-title").textContent = won ? "It guessed it!" : (skipped ? "Skipped!" : "Time's up!");
+    $("overlay-text").textContent = won
+      ? "The AI knew it was " + withArticle(currentWord) + " in " + secs + " seconds."
+      : "The word was " + currentWord + ". Why do you think the AI didn't get it?";
+    $("start-btn").textContent = "Next word";
+    ov.hidden = false;
+  }
+
+  function clearDrawing() {
+    background(255);
+    box = null;
+    hasInk = false;
+    dirty = false;
+    resetGuesses();
+  }
+</script>
+</body>
+</html>
